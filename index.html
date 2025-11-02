@@ -1,0 +1,165 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <title>LoL Catapult Timer</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        /* Importa a fonte Inter para o estilo Blitz.gg */
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
+        body {
+            font-family: 'Inter', sans-serif;
+            background-color: transparent;
+            /* Garante que o body não tenha margens, para o overlay ficar bem ajustado */
+            margin: 0;
+            overflow: hidden; /* Evita barras de rolagem */
+        }
+        #timer-overlay {
+            user-select: none;
+            /* Fundo escuro e opaco (90%) como o Blitz.gg */
+            background-color: rgba(18, 20, 24, 0.90); /* Ajustado para 90% */
+            border-radius: 10px; /* Cantos arredondados */
+            padding: 0.5rem 0.75rem; /* Espaçamento interno (menor) */
+            box-shadow: 0 4px 15px rgba(0, 0, 0, 0.5); /* Sombra suave */
+            
+            /* IMPORTANTE: O overlay deve preencher a janela do Electron. */
+            /* O tamanho (width/height) deve ser definido no seu index.js */
+            width: 230px;
+            height: 80px;
+            
+            /* O overlay inteiro é arrastável por padrão */
+            -webkit-app-region: drag;
+            cursor: grab;
+            
+            /* Borda para feedback de travamento */
+            border: 2px solid #34495e; /* Borda cinza/azul padrão */
+            transition: border-color 0.2s ease-in-out;
+            box-sizing: border-box; /* Garante que a borda não aumente o tamanho */
+        }
+        /* Estilos específicos para os textos e linhas, similar ao Blitz.gg */
+        .text-label {
+            color: #7f8c8d; /* Cinza suave */
+            font-size: 0.65rem; /* Muito menor */
+            font-weight: 500; /* Medium weight */
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+        }
+        .timer-value {
+            color: #ffeaa7; /* Amarelo/âmbar para os timers */
+            font-size: 1.25rem; /* Menor */
+            font-weight: 700; /* Bold */
+        }
+    </style>
+</head>
+<body class="bg-transparent">
+
+    <div id="timer-overlay">
+        <!-- Timers das Ondas -->
+        <div class="flex justify-between items-center mb-1">
+            <div class="text-label">Canhão MID</div>
+            <div id="mid-timer" class="timer-value text-amber-400">--:--</div>
+        </div>
+        <div class="flex justify-between items-center">
+            <div class="text-label">Canhão TOP/BOT</div>
+            <div id="side-timer" class="timer-value text-lime-400">--:--</div>
+        </div>
+    </div>
+
+    <script>
+        // --- Referências aos Elementos ---
+        const midTimerEl = document.getElementById('mid-timer');
+        const sideTimerEl = document.getElementById('side-timer');
+        const overlayEl = document.getElementById('timer-overlay');
+        
+        // --- Estado ---
+        let isClickThrough = false; // Estado do click-through
+        let timerInterval = null;
+        let gameTimeInSeconds = 0;
+
+        // --- Constantes do Jogo (Baseado nas regras atuais do LoL) ---
+        const WAVE_SPAWN_START_TIME = 65; // 1:05
+        const WAVE_SPAWN_INTERVAL = 30;
+        
+        const MID_CANNON_START_WAVE = 2;
+        const MID_CANNON_INTERVAL = 2;
+        const MID_ALL_WAVES_TIME = 14 * 60; // 14:00
+        
+        const SIDE_CANNON_START_WAVE = 3;
+        const SIDE_CANNON_INTERVAL = 2;
+        const SIDE_ALL_WAVES_TIME = 21 * 60; // 21:00
+
+        // --- Funções ---
+        function formatTime(totalSeconds) {
+            if (totalSeconds < 0) totalSeconds = 0;
+            const minutes = Math.floor(totalSeconds / 60);
+            const seconds = Math.floor(totalSeconds % 60);
+            return `${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`;
+        }
+
+        function updateAllTimers() {
+            let timeToNextWave;
+            let nextWaveNumber;
+
+            if (gameTimeInSeconds < WAVE_SPAWN_START_TIME) {
+                timeToNextWave = WAVE_SPAWN_START_TIME - gameTimeInSeconds;
+                nextWaveNumber = 1;
+            } else {
+                const timeSinceWaveStart = gameTimeInSeconds - WAVE_SPAWN_START_TIME;
+                timeToNextWave = WAVE_SPAWN_INTERVAL - (timeSinceWaveStart % WAVE_SPAWN_INTERVAL);
+                nextWaveNumber = Math.floor(timeSinceWaveStart / WAVE_SPAWN_INTERVAL) + 2;
+            }
+            
+            let midTimer = findNextCannonTime(gameTimeInSeconds, timeToNextWave, nextWaveNumber, MID_CANNON_START_WAVE, MID_CANNON_INTERVAL, MID_ALL_WAVES_TIME);
+            midTimerEl.textContent = formatTime(midTimer);
+
+            let sideTimer = findNextCannonTime(gameTimeInSeconds, timeToNextWave, nextWaveNumber, SIDE_CANNON_START_WAVE, SIDE_CANNON_INTERVAL, SIDE_ALL_WAVES_TIME);
+            sideTimerEl.textContent = formatTime(sideTimer);
+        }
+
+        function findNextCannonTime(currentTime, timeToNextWave, nextWaveNumber, startWave, interval, allWavesTime) {
+            let waveToCheck = nextWaveNumber;
+            let timeAccumulated = timeToNextWave;
+
+            while (true) {
+                const waveTimestamp = currentTime + timeAccumulated;
+                if (waveTimestamp >= allWavesTime) {
+                    return timeAccumulated;
+                }
+                if (waveToCheck >= startWave && (waveToCheck - startWave) % interval === 0) {
+                    return timeAccumulated;
+                }
+                waveToCheck++;
+                timeAccumulated += WAVE_SPAWN_INTERVAL;
+            }
+        }
+        
+        // --- LÓGICA DE TRAVAMENTO (Double-Click) - RESTAURADA ---
+        overlayEl.addEventListener('dblclick', () => {
+            isClickThrough = !isClickThrough;
+            if (isClickThrough) {
+                // Ativa o click-through (cliques atravessam a janela)
+                window.electronAPI.setIgnoreMouseEvents(true, { forward: true });
+                overlayEl.style.webkitAppRegion = 'no-drag'; // Impede de arrastar
+                overlayEl.style.cursor = 'default';
+                overlayEl.style.borderColor = '#22c55e'; // Borda verde (travado)
+            } else {
+                // Desativa o click-through (permite clicar/arrastar)
+                window.electronAPI.setIgnoreMouseEvents(false);
+                overlayEl.style.webkitAppRegion = 'drag'; // Permite arrastar
+                overlayEl.style.cursor = 'grab';
+                overlayEl.style.borderColor = '#34495e'; // Borda padrão
+            }
+        });
+
+        // Inicialização
+        // O timer começa automaticamente
+        timerInterval = setInterval(() => {
+            gameTimeInSeconds++;
+            // Nome da função corrigido de updateAllTimsears para updateAllTimers
+            updateAllTimers(); 
+        }, 1000);
+        updateAllTimers();
+    </script>
+</body>
+</html>
+
