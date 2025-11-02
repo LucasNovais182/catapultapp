@@ -7,6 +7,7 @@ let gameDetectionInterval = null;
 let isGameDetected = false;
 let lastGameTime = 0;
 let gameEndCheckInterval = null;
+let isLoLRunning = false; // Flag para saber se o LoL está rodando
 
 function createWindow() {
   mainWindow = new BrowserWindow({
@@ -26,23 +27,37 @@ function createWindow() {
   });
 
   // Configurações específicas para garantir que fique sobre o jogo
-  // No macOS, usa 'floating' ou 'tornado-menu' para maior prioridade
-  if (process.platform === 'darwin') {
-    mainWindow.setAlwaysOnTop(true, 'floating');
-    mainWindow.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true }); // Visível em fullscreen
+  // Windows: Funciona bem com fullscreen e borderless windowed
+  // macOS: Precisa usar "Janela sem bordas" (fullscreen exclusivo bloqueia overlays)
+  if (process.platform === 'win32') {
+    // Windows - configuração otimizada
+    mainWindow.setAlwaysOnTop(true, 'screen-saver'); // Nível mais alto no Windows
+    mainWindow.setVisibleOnAllWorkspaces(true);
+  } else if (process.platform === 'darwin') {
+    // macOS - tenta o melhor possível
+    try {
+      mainWindow.setAlwaysOnTop(true, 'modal-panel');
+    } catch (e) {
+      try {
+        mainWindow.setAlwaysOnTop(true, 'floating');
+      } catch (e2) {
+        mainWindow.setAlwaysOnTop(true);
+      }
+    }
+    mainWindow.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
   } else {
+    // Linux e outros
     mainWindow.setAlwaysOnTop(true);
     mainWindow.setVisibleOnAllWorkspaces(true);
   }
   mainWindow.setFullScreenable(false); // Não pode entrar em fullscreen
   mainWindow.setPosition(0, 0); // Posição inicial da janela
   
-  // Força a janela a permanecer no topo periodicamente (workaround para alguns casos)
-  setInterval(() => {
-    if (mainWindow && !mainWindow.isDestroyed()) {
-      mainWindow.setAlwaysOnTop(true);
-    }
-  }, 1000);
+  // Garante que a janela nunca receba foco ou minimize outras janelas
+  mainWindow.on('focus', () => {
+    // Se por algum motivo receber foco, remove imediatamente
+    mainWindow.blur();
+  });
 
   // Carrega o seu arquivo HTML
   mainWindow.loadFile('index.html');
@@ -98,15 +113,51 @@ function checkGameStatus() {
         const gameStats = JSON.parse(data);
         const gameTime = gameStats?.gameTime || 0;
 
+        // Se a API respondeu, o LoL está rodando
+        if (!isLoLRunning) {
+          isLoLRunning = true;
+          console.log('League of Legends detectado rodando.');
+        }
+
         // Se o tempo de jogo for maior que 0, a partida começou
         if (gameTime > 0 && !isGameDetected) {
           isGameDetected = true;
           lastGameTime = gameTime;
           console.log('Partida detectada! Mostrando overlay e iniciando timer...');
+          if (process.platform === 'darwin') {
+            console.log('⚠️ macOS: Se o overlay não aparecer, use "Janela sem bordas" no LoL (fullscreen exclusivo bloqueia overlays).');
+          }
           if (mainWindow && !mainWindow.isDestroyed()) {
             // Mostra a janela quando a partida começar
             if (!mainWindow.isVisible()) {
-              mainWindow.show();
+              // Reforça alwaysOnTop antes de mostrar
+              if (process.platform === 'win32') {
+                // Windows - melhor suporte para overlays
+                mainWindow.setAlwaysOnTop(true, 'screen-saver');
+                mainWindow.setVisibleOnAllWorkspaces(true);
+              } else if (process.platform === 'darwin') {
+                // macOS
+                try {
+                  mainWindow.setAlwaysOnTop(true, 'modal-panel');
+                } catch (e) {
+                  try {
+                    mainWindow.setAlwaysOnTop(true, 'floating');
+                  } catch (e2) {
+                    mainWindow.setAlwaysOnTop(true);
+                  }
+                }
+                mainWindow.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
+              } else {
+                mainWindow.setAlwaysOnTop(true);
+                mainWindow.setVisibleOnAllWorkspaces(true);
+              }
+              mainWindow.show(); // Mostra a janela
+              // Remove foco imediatamente se por acaso ganhar
+              setTimeout(() => {
+                if (mainWindow && !mainWindow.isDestroyed()) {
+                  mainWindow.blur();
+                }
+              }, 100);
             }
             mainWindow.webContents.send('timer-start');
             startGameEndDetection();
@@ -117,26 +168,29 @@ function checkGameStatus() {
         }
       } catch (error) {
         // API não disponível ou resposta inválida (jogo não está rodando ou partida não começou)
+        if (isLoLRunning) {
+          isLoLRunning = false;
+          hideOverlayIfVisible();
+        }
       }
     });
   });
 
   req.on('error', (error) => {
-    // Erro ao conectar (normal quando jogo não está rodando)
+    // Erro ao conectar - LoL não está rodando ou partida não começou
+    if (isLoLRunning) {
+      // Se o LoL estava rodando e agora não está mais
+      isLoLRunning = false;
+      console.log('League of Legends não está mais rodando. Escondendo overlay...');
+      hideOverlayIfVisible();
+    }
+    
     if (isGameDetected) {
       // Se estava detectado e agora não está mais, o jogo terminou
       isGameDetected = false;
       console.log('Partida terminada. Escondendo overlay...');
       stopGameEndDetection();
-      if (mainWindow && !mainWindow.isDestroyed()) {
-        mainWindow.webContents.send('timer-stop');
-        // Esconde a janela após 2 segundos (mas mantém a janela criada para próxima partida)
-        setTimeout(() => {
-          if (mainWindow && !mainWindow.isDestroyed()) {
-            mainWindow.hide();
-          }
-        }, 2000);
-      }
+      hideOverlayIfVisible();
     }
   });
 
@@ -199,20 +253,32 @@ function startGameEndDetection() {
             stuckTimeCount = 0;
           }
         } catch (error) {
-          // Se não conseguir ler a API, o jogo terminou
+          // Se não conseguir ler a API, o jogo pode ter terminado
+          if (isLoLRunning) {
+            // Verifica novamente se o LoL ainda está rodando
+            isLoLRunning = false;
+          }
           handleGameEnd();
         }
       });
     });
 
     req.on('error', () => {
-      // Erro ao conectar = jogo terminou
+      // Erro ao conectar = LoL não está mais rodando
+      if (isLoLRunning) {
+        isLoLRunning = false;
+      }
       handleGameEnd();
     });
 
     req.on('timeout', () => {
       req.destroy();
-      handleGameEnd();
+      // Timeout pode ser temporário, então verificamos novamente
+      if (isLoLRunning) {
+        // Deixa o timeout continuar verificando antes de esconder
+      } else {
+        handleGameEnd();
+      }
     });
 
     req.end();
@@ -226,18 +292,22 @@ function stopGameEndDetection() {
   }
 }
 
-function handleGameEnd() {
-  stopGameEndDetection();
-  isGameDetected = false;
-  if (mainWindow && !mainWindow.isDestroyed()) {
+function hideOverlayIfVisible() {
+  if (mainWindow && !mainWindow.isDestroyed() && mainWindow.isVisible()) {
     mainWindow.webContents.send('timer-stop');
-    // Fecha a janela após 2 segundos
+    // Esconde a janela após 2 segundos
     setTimeout(() => {
       if (mainWindow && !mainWindow.isDestroyed()) {
-        mainWindow.hide(); // Esconde em vez de fechar para permitir recriar na próxima partida
+        mainWindow.hide();
       }
     }, 2000);
   }
+}
+
+function handleGameEnd() {
+  stopGameEndDetection();
+  isGameDetected = false;
+  hideOverlayIfVisible();
 }
 
 // Suprime avisos de certificado no console do Electron
