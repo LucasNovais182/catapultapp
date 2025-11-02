@@ -25,7 +25,7 @@
             /* IMPORTANTE: O overlay deve preencher a janela do Electron. */
             /* O tamanho (width/height) deve ser definido no seu index.js */
             width: 230px;
-            height: 80px;
+            height: 50px;
             
             /* O overlay inteiro é arrastável por padrão */
             -webkit-app-region: drag;
@@ -54,39 +54,43 @@
 <body class="bg-transparent">
 
     <div id="timer-overlay">
-        <!-- Timers das Ondas -->
-        <div class="flex justify-between items-center mb-1">
-            <div class="text-label">Canhão MID</div>
-            <div id="mid-timer" class="timer-value text-amber-400">--:--</div>
-        </div>
+        <!-- Timer de Canhão -->
         <div class="flex justify-between items-center">
-            <div class="text-label">Canhão TOP/BOT</div>
-            <div id="side-timer" class="timer-value text-lime-400">--:--</div>
+            <div class="text-label">Canhão</div>
+            <div id="cannon-timer" class="timer-value text-amber-400">--:--</div>
         </div>
     </div>
 
     <script>
         // --- Referências aos Elementos ---
-        const midTimerEl = document.getElementById('mid-timer');
-        const sideTimerEl = document.getElementById('side-timer');
+        const cannonTimerEl = document.getElementById('cannon-timer');
         const overlayEl = document.getElementById('timer-overlay');
         
         // --- Estado ---
         let isClickThrough = false; // Estado do click-through
         let timerInterval = null;
         let gameTimeInSeconds = 0;
+        let isTimerRunning = false;
 
-        // --- Constantes do Jogo (Baseado nas regras atuais do LoL) ---
-        const WAVE_SPAWN_START_TIME = 65; // 1:05
-        const WAVE_SPAWN_INTERVAL = 30;
+        // --- Constantes do Jogo ---
+        const WAVE_SPAWN_START_TIME = 65; // 1:05 - primeira onda
+        const WAVE_SPAWN_INTERVAL = 30; // Intervalo entre ondas (30 segundos)
         
-        const MID_CANNON_START_WAVE = 2;
-        const MID_CANNON_INTERVAL = 2;
-        const MID_ALL_WAVES_TIME = 14 * 60; // 14:00
+        // Timers exatos das ondas de canhão (em segundos)
+        // Wave 4 — 02:35, Wave 7 — 04:05, Wave 10 — 05:35, etc.
+        const CANNON_WAVE_TIMES = [
+            155,  // Wave 4 — 02:35
+            245,  // Wave 7 — 04:05
+            335,  // Wave 10 — 05:35
+            425,  // Wave 13 — 07:05
+            515,  // Wave 16 — 08:35
+            605,  // Wave 19 — 10:05
+            695,  // Wave 22 — 11:35
+            785,  // Wave 25 — 13:05
+            875   // Wave 28 — 14:35
+        ];
         
-        const SIDE_CANNON_START_WAVE = 3;
-        const SIDE_CANNON_INTERVAL = 2;
-        const SIDE_ALL_WAVES_TIME = 21 * 60; // 21:00
+        const LAST_CANNON_TIME = 875; // 14:35 - última onda de canhão
 
         // --- Funções ---
         function formatTime(totalSeconds) {
@@ -96,41 +100,28 @@
             return `${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`;
         }
 
-        function updateAllTimers() {
-            let timeToNextWave;
-            let nextWaveNumber;
-
-            if (gameTimeInSeconds < WAVE_SPAWN_START_TIME) {
-                timeToNextWave = WAVE_SPAWN_START_TIME - gameTimeInSeconds;
-                nextWaveNumber = 1;
-            } else {
-                const timeSinceWaveStart = gameTimeInSeconds - WAVE_SPAWN_START_TIME;
-                timeToNextWave = WAVE_SPAWN_INTERVAL - (timeSinceWaveStart % WAVE_SPAWN_INTERVAL);
-                nextWaveNumber = Math.floor(timeSinceWaveStart / WAVE_SPAWN_INTERVAL) + 2;
+        // Encontra o tempo até a próxima onda de canhão
+        function findNextCannonTime(currentTimeInSeconds) {
+            // Se já passou da última onda de canhão, retorna 0
+            if (currentTimeInSeconds >= LAST_CANNON_TIME) {
+                return 0;
             }
             
-            let midTimer = findNextCannonTime(gameTimeInSeconds, timeToNextWave, nextWaveNumber, MID_CANNON_START_WAVE, MID_CANNON_INTERVAL, MID_ALL_WAVES_TIME);
-            midTimerEl.textContent = formatTime(midTimer);
-
-            let sideTimer = findNextCannonTime(gameTimeInSeconds, timeToNextWave, nextWaveNumber, SIDE_CANNON_START_WAVE, SIDE_CANNON_INTERVAL, SIDE_ALL_WAVES_TIME);
-            sideTimerEl.textContent = formatTime(sideTimer);
+            // Encontra a próxima onda de canhão
+            for (let i = 0; i < CANNON_WAVE_TIMES.length; i++) {
+                if (CANNON_WAVE_TIMES[i] > currentTimeInSeconds) {
+                    return CANNON_WAVE_TIMES[i] - currentTimeInSeconds;
+                }
+            }
+            
+            // Não deveria chegar aqui, mas retorna 0 como fallback
+            return 0;
         }
 
-        function findNextCannonTime(currentTime, timeToNextWave, nextWaveNumber, startWave, interval, allWavesTime) {
-            let waveToCheck = nextWaveNumber;
-            let timeAccumulated = timeToNextWave;
-
-            while (true) {
-                const waveTimestamp = currentTime + timeAccumulated;
-                if (waveTimestamp >= allWavesTime) {
-                    return timeAccumulated;
-                }
-                if (waveToCheck >= startWave && (waveToCheck - startWave) % interval === 0) {
-                    return timeAccumulated;
-                }
-                waveToCheck++;
-                timeAccumulated += WAVE_SPAWN_INTERVAL;
-            }
+        function updateAllTimers() {
+            // Calcula o tempo até a próxima onda de canhão
+            const timeToNextCannon = findNextCannonTime(gameTimeInSeconds);
+            cannonTimerEl.textContent = formatTime(timeToNextCannon);
         }
         
         // --- LÓGICA DE TRAVAMENTO (Double-Click) - RESTAURADA ---
@@ -151,13 +142,43 @@
             }
         });
 
-        // Inicialização
-        // O timer começa automaticamente
-        timerInterval = setInterval(() => {
-            gameTimeInSeconds++;
-            // Nome da função corrigido de updateAllTimsears para updateAllTimers
-            updateAllTimers(); 
-        }, 1000);
+        // Função para iniciar o timer
+        function startTimer() {
+            if (isTimerRunning) return; // Evita múltiplos timers
+            
+            isTimerRunning = true;
+            gameTimeInSeconds = 0; // Reseta o tempo quando inicia
+            
+            timerInterval = setInterval(() => {
+                gameTimeInSeconds++;
+                updateAllTimers(); 
+            }, 1000);
+            updateAllTimers();
+        }
+
+        // Função para parar o timer
+        function stopTimer() {
+            if (timerInterval) {
+                clearInterval(timerInterval);
+                timerInterval = null;
+            }
+            isTimerRunning = false;
+            gameTimeInSeconds = 0;
+            cannonTimerEl.textContent = '--:--';
+        }
+
+        // Escuta mensagem do processo principal para iniciar o timer
+        window.electronAPI.onTimerStart(() => {
+            startTimer();
+        });
+
+        // Escuta mensagem do processo principal para parar o timer
+        window.electronAPI.onTimerStop(() => {
+            stopTimer();
+        });
+
+        // Inicialização - timer NÃO começa automaticamente
+        // Será iniciado quando a partida for detectada
         updateAllTimers();
     </script>
 </body>
